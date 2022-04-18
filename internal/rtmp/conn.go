@@ -103,8 +103,15 @@ func (c *Conn) readTracksFromMetadata(pkt av.Packet) (*gortsplib.TrackH264, *gor
 		return nil, nil, fmt.Errorf("invalid metadata")
 	}
 
-	md, ok := arr[0].(flvio.AMFMap)
-	if !ok {
+	var md flvio.AMFMap
+	switch tt := arr[0].(type) {
+	case flvio.AMFMap:
+		md = tt
+
+	case nil:
+		return nil, nil, errEmptyMetadata
+
+	default:
 		return nil, nil, fmt.Errorf("invalid metadata")
 	}
 
@@ -130,7 +137,7 @@ func (c *Conn) readTracksFromMetadata(pkt av.Packet) (*gortsplib.TrackH264, *gor
 			}
 		}
 
-		return false, fmt.Errorf("unsupported video codec %v", v)
+		return false, fmt.Errorf("unsupported video codec: %v", v)
 	}()
 	if err != nil {
 		return nil, nil, err
@@ -158,7 +165,7 @@ func (c *Conn) readTracksFromMetadata(pkt av.Packet) (*gortsplib.TrackH264, *gor
 			}
 		}
 
-		return false, fmt.Errorf("unsupported audio codec %v", v)
+		return false, fmt.Errorf("unsupported audio codec: %v", v)
 	}()
 	if err != nil {
 		return nil, nil, err
