@@ -2,6 +2,7 @@ package hls
 
 import (
 	"bytes"
+	"fmt"
 	"time"
 
 	"github.com/aler9/gortsplib"
@@ -18,7 +19,9 @@ type muxerVariantFMP4Segmenter struct {
 	onPartFinalized    func(*muxerVariantFMP4Part)
 
 	currentSegment *muxerVariantFMP4Segment
-	startPTS       time.Duration
+	videoStartPTS  time.Duration
+	audioStartPTS  *time.Duration
+	startTime      time.Time
 	lastSPS        []byte
 	lastPPS        []byte
 	nextSegmentID  uint64
@@ -48,8 +51,14 @@ func newMuxerVariantFMP4Segmenter(
 }
 
 func (m *muxerVariantFMP4Segmenter) reset() {
+	_, err := m.currentSegment.finalize()
+	if err == nil {
+		m.onSegmentFinalized(m.currentSegment)
+	}
+
 	m.currentSegment = nil
-	m.startPTS = 0
+	m.videoStartPTS = 0
+	m.startTime = time.Time{}
 	m.lastSPS = nil
 	m.lastPPS = nil
 	m.nextSegmentID = 0
@@ -97,10 +106,11 @@ func (m *muxerVariantFMP4Segmenter) writeH264(pts time.Duration, nalus [][]byte)
 
 		m.lastSPS = m.videoTrack.SPS()
 		m.lastPPS = m.videoTrack.PPS()
-		m.startPTS = pts
+		m.videoStartPTS = pts
+		m.startTime = time.Now()
 		pts = 0
 	} else {
-		pts -= m.startPTS
+		pts -= m.videoStartPTS
 
 		// switch segment
 		if idrPresent {
@@ -110,7 +120,7 @@ func (m *muxerVariantFMP4Segmenter) writeH264(pts time.Duration, nalus [][]byte)
 			if (pts-m.currentSegment.startDTS) >= m.segmentDuration ||
 				!bytes.Equal(m.lastSPS, sps) ||
 				!bytes.Equal(m.lastPPS, pps) {
-				err := m.currentSegment.finalize()
+				residualAudioEntries, err := m.currentSegment.finalize()
 				if err != nil {
 					return err
 				}
@@ -132,18 +142,20 @@ func (m *muxerVariantFMP4Segmenter) writeH264(pts time.Duration, nalus [][]byte)
 				if err != nil {
 					return err
 				}
+
+				for _, entry := range residualAudioEntries {
+					fmt.Println("RES PTS", entry.pts)
+					err := m.currentSegment.writeAAC(entry.pts, [][]byte{entry.au})
+					if err != nil {
+						return err
+					}
+				}
 			}
 		}
 	}
 
 	err := m.currentSegment.writeH264(pts, nalus)
 	if err != nil {
-		err := m.currentSegment.finalize()
-		if err != nil {
-			return err
-		}
-		m.onSegmentFinalized(m.currentSegment)
-
 		m.reset()
 		return err
 	}
@@ -173,15 +185,17 @@ func (m *muxerVariantFMP4Segmenter) writeAAC(pts time.Duration, aus [][]byte) er
 				return err
 			}
 
-			m.startPTS = pts
+			v := pts
+			m.audioStartPTS = &v
+			m.startTime = time.Now()
 			pts = 0
 		} else {
-			pts -= m.startPTS
+			pts -= *m.audioStartPTS
 
 			// switch segment
 			if m.currentSegment.audioEntriesCount >= segmentMinAUCount &&
 				(pts-m.currentSegment.startDTS) >= m.segmentDuration {
-				err := m.currentSegment.finalize()
+				_, err := m.currentSegment.finalize()
 				if err != nil {
 					return err
 				}
@@ -209,17 +223,22 @@ func (m *muxerVariantFMP4Segmenter) writeAAC(pts time.Duration, aus [][]byte) er
 			return nil
 		}
 
-		pts -= m.startPTS
+		if m.audioStartPTS == nil {
+			v := m.videoStartPTS - time.Now().Sub(m.startTime)
+			m.audioStartPTS = &v
+		}
+
+		pts -= *m.audioStartPTS
+
+		if pts < m.currentSegment.currentPart.startDTS {
+			fmt.Println("HEEEEERE3", m.currentSegment.currentPart.startDTS-pts)
+			*m.audioStartPTS -= m.currentSegment.currentPart.startDTS - pts
+			pts = m.currentSegment.currentPart.startDTS
+		}
 	}
 
 	err := m.currentSegment.writeAAC(pts, aus)
 	if err != nil {
-		err := m.currentSegment.finalize()
-		if err != nil {
-			return err
-		}
-		m.onSegmentFinalized(m.currentSegment)
-
 		m.reset()
 		return err
 	}

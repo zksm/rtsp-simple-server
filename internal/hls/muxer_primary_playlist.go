@@ -58,12 +58,30 @@ func (p *muxerPrimaryPlaylist) file() *MuxerFileResponse {
 					"#EXT-X-STREAM-INF:BANDWIDTH=200000,CODECS=\"" + strings.Join(codecs, ",") + "\"\n" +
 					"stream.m3u8\n"))
 
+			case p.videoTrack != nil && p.audioTrack != nil:
+				return bytes.NewReader([]byte("#EXTM3U\n" +
+					"#EXT-X-VERSION:7\n" +
+					"\n" +
+					"#EXT-X-STREAM-INF:BANDWIDTH=200000,CODECS=\"" + strings.Join(codecs, ",") + "\",AUDIO=\"aud\"\n" +
+					"stream_video.m3u8\n" +
+					"\n" +
+					"#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aud\",AUTOSELECT=YES,DEFAULT=YES,URI=\"stream_audio.m3u8\"\n" +
+					"\n"))
+
+			case p.videoTrack != nil:
+				return bytes.NewReader([]byte("#EXTM3U\n" +
+					"#EXT-X-VERSION:7\n" +
+					"\n" +
+					"#EXT-X-STREAM-INF:BANDWIDTH=200000,CODECS=\"" + strings.Join(codecs, ",") + "\"\n" +
+					"stream_video.m3u8\n" +
+					"\n"))
+
 			default:
 				return bytes.NewReader([]byte("#EXTM3U\n" +
 					"#EXT-X-VERSION:7\n" +
 					"\n" +
 					"#EXT-X-STREAM-INF:BANDWIDTH=200000,CODECS=\"" + strings.Join(codecs, ",") + "\"\n" +
-					"stream.m3u8\n" +
+					"stream_audio.m3u8\n" +
 					"\n"))
 			}
 		}(),

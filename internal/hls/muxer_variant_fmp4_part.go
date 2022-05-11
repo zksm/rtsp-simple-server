@@ -2,12 +2,14 @@ package hls
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"strconv"
 	"time"
 
 	"github.com/abema/go-mp4"
 	"github.com/aler9/gortsplib"
+	"github.com/aler9/gortsplib/pkg/aac"
 	"github.com/aler9/gortsplib/pkg/h264"
 )
 
@@ -308,6 +310,7 @@ func newMuxerVariantFMP4Part(
 	startDTS time.Duration,
 	sampleDuration time.Duration,
 ) *muxerVariantFMP4Part {
+	fmt.Println("START", startDTS)
 	return &muxerVariantFMP4Part{
 		videoTrack:     videoTrack,
 		audioTrack:     audioTrack,
@@ -325,7 +328,43 @@ func (p *muxerVariantFMP4Part) reader() io.Reader {
 	return bytes.NewReader(p.rendered)
 }
 
-func (p *muxerVariantFMP4Part) finalize() error {
+func (p *muxerVariantFMP4Part) finalize() ([]fmp4PartAudioEntry, error) {
+	var residualAudioEntries []fmp4PartAudioEntry
+
+	if p.videoTrack != nil {
+		p.duration = time.Duration(len(p.videoEntries)) * p.sampleDuration
+
+		// remove audio beyond the video DTS
+		if p.audioTrack != nil {
+			temp := time.Duration(len(p.audioEntries)) * aac.SamplesPerAccessUnit * time.Second / time.Duration(p.audioTrack.ClockRate())
+			if temp > p.duration {
+				p.duration = temp
+			}
+
+			endDTS := p.startDTS + p.duration
+			fmt.Println("END DTS", endDTS)
+
+			residualAudioEntriesCount := 0
+			for residualAudioEntriesCount < len(p.audioEntries) {
+				entry := p.audioEntries[len(p.audioEntries)-1-residualAudioEntriesCount]
+				entryFinalPTS := entry.pts // + aac.SamplesPerAccessUnit*time.Second/time.Duration(p.audioTrack.ClockRate())
+				if entryFinalPTS < endDTS {
+					break
+				}
+
+				residualAudioEntriesCount++
+			}
+
+			fmt.Println("removed", residualAudioEntriesCount)
+
+			residualAudioEntries = p.audioEntries[len(p.audioEntries)-residualAudioEntriesCount:]
+			p.audioEntries = p.audioEntries[:len(p.audioEntries)-residualAudioEntriesCount]
+		}
+
+	} else {
+		p.duration = time.Duration(len(p.audioEntries)) * aac.SamplesPerAccessUnit * time.Second / time.Duration(p.audioTrack.ClockRate())
+	}
+
 	var err error
 	p.rendered, err = mp4PartGenerate(
 		p.videoTrack,
@@ -335,19 +374,13 @@ func (p *muxerVariantFMP4Part) finalize() error {
 		p.startDTS,
 		p.sampleDuration)
 	if err != nil {
-		return err
-	}
-
-	if p.videoTrack != nil {
-		p.duration = time.Duration(len(p.videoEntries)) * p.sampleDuration
-	} else {
-		p.duration = time.Duration(len(p.audioEntries)) * 1024 * time.Second / time.Duration(p.audioTrack.ClockRate())
+		return nil, err
 	}
 
 	p.videoEntries = nil
 	p.audioEntries = nil
 
-	return nil
+	return residualAudioEntries, nil
 }
 
 func (p *muxerVariantFMP4Part) writeH264(pts time.Duration, nalus [][]byte) error {
@@ -365,9 +398,15 @@ func (p *muxerVariantFMP4Part) writeH264(pts time.Duration, nalus [][]byte) erro
 }
 
 func (p *muxerVariantFMP4Part) writeAAC(pts time.Duration, aus [][]byte) error {
-	for _, au := range aus {
+	for i, au := range aus {
+		auPTS := pts + time.Duration(i)*aac.SamplesPerAccessUnit*time.Second/time.Duration(p.audioTrack.ClockRate())
+
+		if auPTS < p.startDTS {
+			panic("HERE2")
+		}
+
 		p.audioEntries = append(p.audioEntries, fmp4PartAudioEntry{
-			pts: pts,
+			pts: auPTS,
 			au:  au,
 		})
 	}
