@@ -58,6 +58,7 @@ type rtmpConnParent interface {
 type rtmpConn struct {
 	id                        string
 	externalAuthenticationURL string
+	isTLS                     bool
 	rtspAddress               string
 	readTimeout               conf.StringDuration
 	writeTimeout              conf.StringDuration
@@ -82,6 +83,7 @@ func newRTMPConn(
 	parentCtx context.Context,
 	id string,
 	externalAuthenticationURL string,
+	isTLS bool,
 	rtspAddress string,
 	readTimeout conf.StringDuration,
 	writeTimeout conf.StringDuration,
@@ -99,6 +101,7 @@ func newRTMPConn(
 	c := &rtmpConn{
 		id:                        id,
 		externalAuthenticationURL: externalAuthenticationURL,
+		isTLS:                     isTLS,
 		rtspAddress:               rtspAddress,
 		readTimeout:               readTimeout,
 		writeTimeout:              writeTimeout,
@@ -674,18 +677,32 @@ func (c *rtmpConn) onReaderData(data *data) {
 
 // onReaderAPIDescribe implements reader.
 func (c *rtmpConn) onReaderAPIDescribe() interface{} {
+	var typ string
+	if c.isTLS {
+		typ = "rtmpsSession"
+	} else {
+		typ = "rtmpSession"
+	}
+
 	return struct {
 		Type string `json:"type"`
 		ID   string `json:"id"`
-	}{"rtmpConn", c.id}
+	}{typ, c.id}
 }
 
 // onSourceAPIDescribe implements source.
 func (c *rtmpConn) onSourceAPIDescribe() interface{} {
+	var typ string
+	if c.isTLS {
+		typ = "rtmpsSession"
+	} else {
+		typ = "rtmpSession"
+	}
+
 	return struct {
 		Type string `json:"type"`
 		ID   string `json:"id"`
-	}{"rtmpConn", c.id}
+	}{typ, c.id}
 }
 
 // onPublisherAccepted implements publisher.

@@ -35,6 +35,7 @@ type Core struct {
 	rtspServer      *rtspServer
 	rtspsServer     *rtspServer
 	rtmpServer      *rtmpServer
+	rtmpsServer     *rtmpServer
 	hlsServer       *hlsServer
 	api             *api
 	confWatcher     *confwatcher.ConfWatcher
@@ -313,6 +314,36 @@ func (p *Core) createResources(initial bool) error {
 				p.conf.ReadTimeout,
 				p.conf.WriteTimeout,
 				p.conf.ReadBufferCount,
+				false,
+				"",
+				"",
+				p.conf.RTSPAddress,
+				p.conf.RunOnConnect,
+				p.conf.RunOnConnectRestart,
+				p.externalCmdPool,
+				p.metrics,
+				p.pathManager,
+				p)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	if !p.conf.RTMPDisable &&
+		(p.conf.Encryption == conf.EncryptionStrict ||
+			p.conf.Encryption == conf.EncryptionOptional) {
+		if p.rtmpsServer == nil {
+			p.rtmpServer, err = newRTMPServer(
+				p.ctx,
+				p.conf.ExternalAuthenticationURL,
+				p.conf.RTMPSAddress,
+				p.conf.ReadTimeout,
+				p.conf.WriteTimeout,
+				p.conf.ReadBufferCount,
+				true,
+				p.conf.ServerCert,
+				p.conf.ServerKey,
 				p.conf.RTSPAddress,
 				p.conf.RunOnConnect,
 				p.conf.RunOnConnectRestart,
@@ -356,6 +387,7 @@ func (p *Core) createResources(initial bool) error {
 				p.rtspServer,
 				p.rtspsServer,
 				p.rtmpServer,
+				p.rtmpsServer,
 				p.hlsServer,
 				p)
 			if err != nil {
@@ -458,6 +490,7 @@ func (p *Core) closeResources(newConf *conf.Conf, calledByAPI bool) {
 	if newConf == nil ||
 		newConf.RTMPDisable != p.conf.RTMPDisable ||
 		newConf.RTMPAddress != p.conf.RTMPAddress ||
+		newConf.RTMPSAddress != p.conf.RTMPSAddress ||
 		newConf.ExternalAuthenticationURL != p.conf.ExternalAuthenticationURL ||
 		newConf.ReadTimeout != p.conf.ReadTimeout ||
 		newConf.WriteTimeout != p.conf.WriteTimeout ||

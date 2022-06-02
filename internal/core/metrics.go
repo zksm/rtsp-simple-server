@@ -47,6 +47,7 @@ type metrics struct {
 	rtspServer  metricsRTSPServer
 	rtspsServer metricsRTSPServer
 	rtmpServer  metricsRTMPServer
+	rtmpsServer metricsRTMPServer
 	hlsServer   metricsHLSServer
 }
 
@@ -187,6 +188,33 @@ func (m *metrics) onMetrics(ctx *gin.Context) {
 		}
 	}
 
+	if !interfaceIsEmpty(m.rtmpsServer) {
+		res := m.rtmpsServer.onAPIConnsList(rtmpServerAPIConnsListReq{})
+		if res.err == nil {
+			idleCount := int64(0)
+			readCount := int64(0)
+			publishCount := int64(0)
+
+			for _, i := range res.data.Items {
+				switch i.State {
+				case "idle":
+					idleCount++
+				case "read":
+					readCount++
+				case "publish":
+					publishCount++
+				}
+			}
+
+			out += metric("rtmps_conns{state=\"idle\"}",
+				idleCount)
+			out += metric("rtmps_conns{state=\"read\"}",
+				readCount)
+			out += metric("rtmps_conns{state=\"publish\"}",
+				publishCount)
+		}
+	}
+
 	if !interfaceIsEmpty(m.hlsServer) {
 		res := m.hlsServer.onAPIHLSMuxersList(hlsServerAPIMuxersListReq{})
 		if res.err == nil {
@@ -226,6 +254,13 @@ func (m *metrics) onRTMPServerSet(s metricsRTMPServer) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 	m.rtmpServer = s
+}
+
+// onRTMPServerSet is called by rtmpServer.
+func (m *metrics) onRTMPSServerSet(s metricsRTMPServer) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	m.rtmpsServer = s
 }
 
 // onHLSServerSet is called by hlsServer.

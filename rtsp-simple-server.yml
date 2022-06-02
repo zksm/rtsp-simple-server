@@ -101,6 +101,8 @@ authMethods: [basic, digest]
 rtmpDisable: no
 # Address of the RTMP listener.
 rtmpAddress: :1935
+# Address of the RTMPS listener.
+rtmpsAddress: :1936
 
 ###############################################
 # HLS parameters

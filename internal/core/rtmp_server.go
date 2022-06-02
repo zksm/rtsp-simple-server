@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/binary"
 	"fmt"
 	"net"
@@ -50,6 +51,7 @@ type rtmpServer struct {
 	readTimeout               conf.StringDuration
 	writeTimeout              conf.StringDuration
 	readBufferCount           int
+	isTLS                     bool
 	rtspAddress               string
 	runOnConnect              string
 	runOnConnectRestart       bool
@@ -77,6 +79,9 @@ func newRTMPServer(
 	readTimeout conf.StringDuration,
 	writeTimeout conf.StringDuration,
 	readBufferCount int,
+	isTLS bool,
+	serverCert string,
+	serverKey string,
 	rtspAddress string,
 	runOnConnect string,
 	runOnConnectRestart bool,
@@ -85,9 +90,26 @@ func newRTMPServer(
 	pathManager *pathManager,
 	parent rtmpServerParent,
 ) (*rtmpServer, error) {
-	l, err := net.Listen("tcp", address)
-	if err != nil {
-		return nil, err
+	var l net.Listener
+
+	if isTLS {
+		cert, err := tls.LoadX509KeyPair(serverCert, serverKey)
+		if err != nil {
+			return nil, err
+		}
+
+		config := &tls.Config{Certificates: []tls.Certificate{cert}}
+		ll, err := tls.Listen("tcp", address, config)
+		if err != nil {
+			return nil, err
+		}
+		l = ll
+	} else {
+		ll, err := net.Listen("tcp", address)
+		if err != nil {
+			return nil, err
+		}
+		l = ll
 	}
 
 	ctx, ctxCancel := context.WithCancel(parentCtx)
@@ -97,6 +119,7 @@ func newRTMPServer(
 		readTimeout:               readTimeout,
 		writeTimeout:              writeTimeout,
 		readBufferCount:           readBufferCount,
+		isTLS:                     isTLS,
 		rtspAddress:               rtspAddress,
 		runOnConnect:              runOnConnect,
 		runOnConnectRestart:       runOnConnectRestart,
@@ -116,7 +139,11 @@ func newRTMPServer(
 	s.log(logger.Info, "listener opened on %s", address)
 
 	if s.metrics != nil {
-		s.metrics.onRTMPServerSet(s)
+		if !isTLS {
+			s.metrics.onRTMPServerSet(s)
+		} else {
+			s.metrics.onRTMPSServerSet(s)
+		}
 	}
 
 	s.wg.Add(1)
@@ -126,7 +153,13 @@ func newRTMPServer(
 }
 
 func (s *rtmpServer) log(level logger.Level, format string, args ...interface{}) {
-	s.parent.Log(level, "[RTMP] "+format, append([]interface{}{}, args...)...)
+	label := func() string {
+		if s.isTLS {
+			return "RTMPS"
+		}
+		return "RTMP"
+	}()
+	s.parent.Log(level, "[%s] "+format, append([]interface{}{label}, args...)...)
 }
 
 func (s *rtmpServer) close() {
@@ -178,6 +211,7 @@ outer:
 				s.ctx,
 				id,
 				s.externalAuthenticationURL,
+				s.isTLS,
 				s.rtspAddress,
 				s.readTimeout,
 				s.writeTimeout,
@@ -247,7 +281,11 @@ outer:
 	s.l.Close()
 
 	if s.metrics != nil {
-		s.metrics.onRTMPServerSet(s)
+		if !s.isTLS {
+			s.metrics.onRTMPServerSet(s)
+		} else {
+			s.metrics.onRTMPSServerSet(s)
+		}
 	}
 }
 
