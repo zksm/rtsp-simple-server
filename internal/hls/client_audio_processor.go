@@ -58,7 +58,8 @@ func (p *clientAudioProcessor) doProcess(
 	data []byte,
 	pts time.Duration,
 ) error {
-	adtsPkts, err := aac.DecodeADTS(data)
+	var adtsPkts aac.ADTSPackets
+	err := adtsPkts.Unmarshal(data)
 	if err != nil {
 		return err
 	}
@@ -78,9 +79,16 @@ func (p *clientAudioProcessor) doProcess(
 		if !p.trackInitialized {
 			p.trackInitialized = true
 
-			track, err := gortsplib.NewTrackAAC(96, pkt.Type, pkt.SampleRate, pkt.ChannelCount, nil, 13, 3, 3)
-			if err != nil {
-				return err
+			track := &gortsplib.TrackAAC{
+				PayloadType: 96,
+				Config: &aac.MPEG4AudioConfig{
+					Type:         pkt.Type,
+					SampleRate:   pkt.SampleRate,
+					ChannelCount: pkt.ChannelCount,
+				},
+				SizeLength:       13,
+				IndexLength:      3,
+				IndexDeltaLength: 3,
 			}
 
 			err = p.onTrack(track)

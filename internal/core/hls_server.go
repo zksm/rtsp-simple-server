@@ -2,8 +2,10 @@ package core
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -14,8 +16,15 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/aler9/rtsp-simple-server/internal/conf"
+	"github.com/aler9/rtsp-simple-server/internal/hls"
 	"github.com/aler9/rtsp-simple-server/internal/logger"
 )
+
+type nilWriter struct{}
+
+func (nilWriter) Write(p []byte) (int, error) {
+	return len(p), nil
+}
 
 type hlsServerAPIMuxersListItem struct {
 	LastRequest string `json:"lastRequest"`
@@ -47,10 +56,13 @@ type hlsServerParent interface {
 type hlsServer struct {
 	externalAuthenticationURL string
 	hlsAlwaysRemux            bool
+	hlsVariant                conf.HLSVariant
 	hlsSegmentCount           int
 	hlsSegmentDuration        conf.StringDuration
+	hlsPartDuration           conf.StringDuration
 	hlsSegmentMaxSize         conf.StringSize
 	hlsAllowOrigin            string
+	hlsTrustedProxies         conf.IPsOrCIDRs
 	readBufferCount           int
 	pathManager               *pathManager
 	metrics                   *metrics
@@ -60,13 +72,15 @@ type hlsServer struct {
 	ctxCancel func()
 	wg        sync.WaitGroup
 	ln        net.Listener
+	tlsConfig *tls.Config
 	muxers    map[string]*hlsMuxer
 
 	// in
-	pathSourceReady chan *path
-	request         chan hlsMuxerRequest
-	muxerClose      chan *hlsMuxer
-	apiMuxersList   chan hlsServerAPIMuxersListReq
+	pathSourceReady    chan *path
+	pathSourceNotReady chan *path
+	request            chan *hlsMuxerRequest
+	muxerClose         chan *hlsMuxer
+	apiMuxersList      chan hlsServerAPIMuxersListReq
 }
 
 func newHLSServer(
@@ -74,10 +88,16 @@ func newHLSServer(
 	address string,
 	externalAuthenticationURL string,
 	hlsAlwaysRemux bool,
+	hlsVariant conf.HLSVariant,
 	hlsSegmentCount int,
 	hlsSegmentDuration conf.StringDuration,
+	hlsPartDuration conf.StringDuration,
 	hlsSegmentMaxSize conf.StringSize,
 	hlsAllowOrigin string,
+	hlsEncryption bool,
+	hlsServerKey string,
+	hlsServerCert string,
+	hlsTrustedProxies conf.IPsOrCIDRs,
 	readBufferCount int,
 	pathManager *pathManager,
 	metrics *metrics,
@@ -88,15 +108,31 @@ func newHLSServer(
 		return nil, err
 	}
 
+	var tlsConfig *tls.Config
+	if hlsEncryption {
+		crt, err := tls.LoadX509KeyPair(hlsServerCert, hlsServerKey)
+		if err != nil {
+			ln.Close()
+			return nil, err
+		}
+
+		tlsConfig = &tls.Config{
+			Certificates: []tls.Certificate{crt},
+		}
+	}
+
 	ctx, ctxCancel := context.WithCancel(parentCtx)
 
 	s := &hlsServer{
 		externalAuthenticationURL: externalAuthenticationURL,
 		hlsAlwaysRemux:            hlsAlwaysRemux,
+		hlsVariant:                hlsVariant,
 		hlsSegmentCount:           hlsSegmentCount,
 		hlsSegmentDuration:        hlsSegmentDuration,
+		hlsPartDuration:           hlsPartDuration,
 		hlsSegmentMaxSize:         hlsSegmentMaxSize,
 		hlsAllowOrigin:            hlsAllowOrigin,
+		hlsTrustedProxies:         hlsTrustedProxies,
 		readBufferCount:           readBufferCount,
 		pathManager:               pathManager,
 		parent:                    parent,
@@ -104,9 +140,11 @@ func newHLSServer(
 		ctx:                       ctx,
 		ctxCancel:                 ctxCancel,
 		ln:                        ln,
+		tlsConfig:                 tlsConfig,
 		muxers:                    make(map[string]*hlsMuxer),
 		pathSourceReady:           make(chan *path),
-		request:                   make(chan hlsMuxerRequest),
+		pathSourceNotReady:        make(chan *path),
+		request:                   make(chan *hlsMuxerRequest),
 		muxerClose:                make(chan *hlsMuxer),
 		apiMuxersList:             make(chan hlsServerAPIMuxersListReq),
 	}
@@ -142,26 +180,53 @@ func (s *hlsServer) run() {
 	router := gin.New()
 	router.NoRoute(s.onRequest)
 
-	hs := &http.Server{Handler: router}
-	go hs.Serve(s.ln)
+	tmp := make([]string, len(s.hlsTrustedProxies))
+	for i, entry := range s.hlsTrustedProxies {
+		tmp[i] = entry.String()
+	}
+	router.SetTrustedProxies(tmp)
+
+	hs := &http.Server{
+		Handler:   router,
+		TLSConfig: s.tlsConfig,
+		ErrorLog:  log.New(&nilWriter{}, "", 0),
+	}
+
+	if s.tlsConfig != nil {
+		go hs.ServeTLS(s.ln, "", "")
+	} else {
+		go hs.Serve(s.ln)
+	}
 
 outer:
 	for {
 		select {
 		case pa := <-s.pathSourceReady:
 			if s.hlsAlwaysRemux {
-				s.findOrCreateMuxer(pa.Name())
+				s.findOrCreateMuxer(pa.Name(), "", nil)
+			}
+
+		case pa := <-s.pathSourceNotReady:
+			if s.hlsAlwaysRemux {
+				c, ok := s.muxers[pa.Name()]
+				if ok {
+					c.close()
+					delete(s.muxers, pa.Name())
+				}
 			}
 
 		case req := <-s.request:
-			r := s.findOrCreateMuxer(req.dir)
-			r.onRequest(req)
+			s.findOrCreateMuxer(req.dir, req.ctx.ClientIP(), req)
 
 		case c := <-s.muxerClose:
 			if c2, ok := s.muxers[c.PathName()]; !ok || c2 != c {
 				continue
 			}
 			delete(s.muxers, c.PathName())
+
+			if s.hlsAlwaysRemux && c.remoteAddr == "" {
+				s.findOrCreateMuxer(c.PathName(), "", nil)
+			}
 
 		case req := <-s.apiMuxersList:
 			muxers := make(map[string]*hlsMuxer)
@@ -191,10 +256,10 @@ outer:
 }
 
 func (s *hlsServer) onRequest(ctx *gin.Context) {
-	s.log(logger.Info, "[conn %v] %s %s", ctx.Request.RemoteAddr, ctx.Request.Method, ctx.Request.URL.Path)
+	s.log(logger.Debug, "[conn %v] %s %s", ctx.ClientIP(), ctx.Request.Method, ctx.Request.URL.Path)
 
 	byts, _ := httputil.DumpRequest(ctx.Request, true)
-	s.log(logger.Debug, "[conn %v] [c->s] %s", ctx.Request.RemoteAddr, string(byts))
+	s.log(logger.Debug, "[conn %v] [c->s] %s", ctx.ClientIP(), string(byts))
 
 	logw := &httpLogWriter{ResponseWriter: ctx.Writer}
 	ctx.Writer = logw
@@ -227,7 +292,9 @@ func (s *hlsServer) onRequest(ctx *gin.Context) {
 	}
 
 	dir, fname := func() (string, string) {
-		if strings.HasSuffix(pa, ".ts") || strings.HasSuffix(pa, ".m3u8") {
+		if strings.HasSuffix(pa, ".m3u8") ||
+			strings.HasSuffix(pa, ".ts") ||
+			strings.HasSuffix(pa, ".mp4") {
 			return gopath.Dir(pa), gopath.Base(pa)
 		}
 		return pa, ""
@@ -241,50 +308,58 @@ func (s *hlsServer) onRequest(ctx *gin.Context) {
 
 	dir = strings.TrimSuffix(dir, "/")
 
-	cres := make(chan hlsMuxerResponse)
-	hreq := hlsMuxerRequest{
+	cres := make(chan func() *hls.MuxerFileResponse)
+	hreq := &hlsMuxerRequest{
 		dir:  dir,
 		file: fname,
-		req:  ctx.Request,
+		ctx:  ctx,
 		res:  cres,
 	}
 
 	select {
 	case s.request <- hreq:
-		res := <-cres
+		cb := <-cres
 
-		for k, v := range res.header {
+		res := cb()
+
+		for k, v := range res.Header {
 			ctx.Writer.Header().Set(k, v)
 		}
-		ctx.Writer.WriteHeader(res.status)
 
-		if res.body != nil {
-			io.Copy(ctx.Writer, res.body)
+		ctx.Writer.WriteHeader(res.Status)
+
+		if res.Body != nil {
+			io.Copy(ctx.Writer, res.Body)
 		}
 
 	case <-s.ctx.Done():
 	}
 
-	s.log(logger.Debug, "[conn %v] [s->c] %s", ctx.Request.RemoteAddr, logw.dump())
+	s.log(logger.Debug, "[conn %v] [s->c] %s", ctx.ClientIP(), logw.dump())
 }
 
-func (s *hlsServer) findOrCreateMuxer(pathName string) *hlsMuxer {
+func (s *hlsServer) findOrCreateMuxer(pathName string, remoteAddr string, req *hlsMuxerRequest) *hlsMuxer {
 	r, ok := s.muxers[pathName]
 	if !ok {
 		r = newHLSMuxer(
 			s.ctx,
 			pathName,
+			remoteAddr,
 			s.externalAuthenticationURL,
-			s.hlsAlwaysRemux,
+			s.hlsVariant,
 			s.hlsSegmentCount,
 			s.hlsSegmentDuration,
+			s.hlsPartDuration,
 			s.hlsSegmentMaxSize,
 			s.readBufferCount,
+			req,
 			&s.wg,
 			pathName,
 			s.pathManager,
 			s)
 		s.muxers[pathName] = r
+	} else if req != nil {
+		r.onRequest(req)
 	}
 	return r
 }
@@ -297,10 +372,18 @@ func (s *hlsServer) onMuxerClose(c *hlsMuxer) {
 	}
 }
 
-// onPathSourceReady is called by core.
+// onPathSourceReady is called by pathManager.
 func (s *hlsServer) onPathSourceReady(pa *path) {
 	select {
 	case s.pathSourceReady <- pa:
+	case <-s.ctx.Done():
+	}
+}
+
+// onPathSourceNotReady is called by pathManager.
+func (s *hlsServer) onPathSourceNotReady(pa *path) {
+	select {
+	case s.pathSourceNotReady <- pa:
 	case <-s.ctx.Done():
 	}
 }

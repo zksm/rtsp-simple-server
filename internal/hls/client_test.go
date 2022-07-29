@@ -123,7 +123,7 @@ func newTestHLSServer(ca string) (*testHLSServer, error) {
 #EXTINF:2,
 ` + segment + "\n"
 
-		ctx.Writer.Header().Set("Content-Type", `application/x-mpegURL`)
+		ctx.Writer.Header().Set("Content-Type", `audio/mpegURL`)
 		io.Copy(ctx.Writer, bytes.NewReader([]byte(cnt)))
 	})
 
@@ -142,7 +142,7 @@ func newTestHLSServer(ca string) (*testHLSServer, error) {
 		mux.SetPCRPID(256)
 		mux.WriteTables()
 
-		enc, _ := h264.AnnexBEncode([][]byte{
+		enc, _ := h264.AnnexBMarshal([][]byte{
 			{7, 1, 2, 3}, // SPS
 			{8},          // PPS
 			{5},          // IDR

@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
-	"encoding/binary"
 	"fmt"
 	"net"
 	"strconv"
@@ -297,7 +296,7 @@ func (s *rtmpServer) newConnID() (string, error) {
 			return "", err
 		}
 
-		u := binary.LittleEndian.Uint32(b)
+		u := uint32(b[3])<<24 | uint32(b[2])<<16 | uint32(b[1])<<8 | uint32(b[0])
 		u %= 899999999
 		u += 100000000
 

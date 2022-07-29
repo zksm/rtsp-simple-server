@@ -84,10 +84,16 @@ func loadConfData(ctx *gin.Context) (interface{}, error) {
 		HLSDisable         *bool                `json:"hlsDisable"`
 		HLSAddress         *string              `json:"hlsAddress"`
 		HLSAlwaysRemux     *bool                `json:"hlsAlwaysRemux"`
+		HLSVariant         *conf.HLSVariant     `json:"hlsVariant"`
 		HLSSegmentCount    *int                 `json:"hlsSegmentCount"`
 		HLSSegmentDuration *conf.StringDuration `json:"hlsSegmentDuration"`
+		HLSPartDuration    *conf.StringDuration `json:"hlsPartDuration"`
 		HLSSegmentMaxSize  *conf.StringSize     `json:"hlsSegmentMaxSize"`
 		HLSAllowOrigin     *string              `json:"hlsAllowOrigin"`
+		HLSEncryption      *bool                `json:"hlsEncryption"`
+		HLSServerKey       *string              `json:"hlsServerKey"`
+		HLSServerCert      *string              `json:"hlsServerCert"`
+		HLSTrustedProxies  *conf.IPsOrCIDRs     `json:"hlsTrustedProxies"`
 	}
 	err := json.NewDecoder(ctx.Request.Body).Decode(&in)
 	if err != nil {
@@ -114,10 +120,10 @@ func loadConfPathData(ctx *gin.Context) (interface{}, error) {
 		// authentication
 		PublishUser *conf.Credential `json:"publishUser"`
 		PublishPass *conf.Credential `json:"publishPass"`
-		PublishIPs  *conf.IPsOrNets  `json:"publishIPs"`
+		PublishIPs  *conf.IPsOrCIDRs `json:"publishIPs"`
 		ReadUser    *conf.Credential `json:"readUser"`
 		ReadPass    *conf.Credential `json:"readPass"`
-		ReadIPs     *conf.IPsOrNets  `json:"readIPs"`
+		ReadIPs     *conf.IPsOrCIDRs `json:"readIPs"`
 
 		// external commands
 		RunOnInit               *string              `json:"runOnInit"`
@@ -204,6 +210,7 @@ func newAPI(
 	}
 
 	router := gin.New()
+	router.SetTrustedProxies(nil)
 	router.NoRoute(a.mwLog)
 	group := router.Group("/", a.mwLog)
 

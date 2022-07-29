@@ -208,10 +208,16 @@ type Conf struct {
 	HLSDisable         bool           `json:"hlsDisable"`
 	HLSAddress         string         `json:"hlsAddress"`
 	HLSAlwaysRemux     bool           `json:"hlsAlwaysRemux"`
+	HLSVariant         HLSVariant     `json:"hlsVariant"`
 	HLSSegmentCount    int            `json:"hlsSegmentCount"`
 	HLSSegmentDuration StringDuration `json:"hlsSegmentDuration"`
+	HLSPartDuration    StringDuration `json:"hlsPartDuration"`
 	HLSSegmentMaxSize  StringSize     `json:"hlsSegmentMaxSize"`
 	HLSAllowOrigin     string         `json:"hlsAllowOrigin"`
+	HLSEncryption      bool           `json:"hlsEncryption"`
+	HLSServerKey       string         `json:"hlsServerKey"`
+	HLSServerCert      string         `json:"hlsServerCert"`
+	HLSTrustedProxies  IPsOrCIDRs     `json:"hlsTrustedProxies"`
 
 	// paths
 	Paths map[string]*PathConf `json:"paths"`
@@ -263,6 +269,9 @@ func (conf *Conf) CheckAndFillMissing() error {
 
 	if conf.ReadBufferCount == 0 {
 		conf.ReadBufferCount = 512
+	}
+	if (conf.ReadBufferCount & (conf.ReadBufferCount - 1)) != 0 {
+		return fmt.Errorf("'ReadBufferCount' must be a power of two")
 	}
 
 	if conf.ExternalAuthenticationURL != "" {
@@ -355,11 +364,15 @@ func (conf *Conf) CheckAndFillMissing() error {
 	}
 
 	if conf.HLSSegmentCount == 0 {
-		conf.HLSSegmentCount = 3
+		conf.HLSSegmentCount = 7
 	}
 
 	if conf.HLSSegmentDuration == 0 {
 		conf.HLSSegmentDuration = 1 * StringDuration(time.Second)
+	}
+
+	if conf.HLSPartDuration == 0 {
+		conf.HLSPartDuration = 200 * StringDuration(time.Millisecond)
 	}
 
 	if conf.HLSSegmentMaxSize == 0 {
@@ -368,6 +381,30 @@ func (conf *Conf) CheckAndFillMissing() error {
 
 	if conf.HLSAllowOrigin == "" {
 		conf.HLSAllowOrigin = "*"
+	}
+
+	if conf.HLSServerKey == "" {
+		conf.HLSServerKey = "server.key"
+	}
+
+	if conf.HLSServerCert == "" {
+		conf.HLSServerCert = "server.crt"
+	}
+
+	switch conf.HLSVariant {
+	case HLSVariantLowLatency:
+		if conf.HLSSegmentCount < 7 {
+			return fmt.Errorf("Low-Latency HLS requires at least 7 segments")
+		}
+
+		if !conf.HLSEncryption {
+			return fmt.Errorf("Low-Latency HLS requires encryption")
+		}
+
+	default:
+		if conf.HLSSegmentCount < 3 {
+			return fmt.Errorf("The minimum number of HLS segments is 3")
+		}
 	}
 
 	// do not add automatically "all", since user may want to

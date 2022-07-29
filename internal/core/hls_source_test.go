@@ -11,6 +11,7 @@ import (
 
 	"github.com/aler9/gortsplib"
 	"github.com/aler9/gortsplib/pkg/h264"
+	"github.com/aler9/gortsplib/pkg/url"
 	"github.com/asticode/go-astits"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -53,7 +54,7 @@ func (ts *testHLSServer) onPlaylist(ctx *gin.Context) {
 segment.ts
 `
 
-	ctx.Writer.Header().Set("Content-Type", `application/x-mpegURL`)
+	ctx.Writer.Header().Set("Content-Type", `audio/mpegURL`)
 	io.Copy(ctx.Writer, bytes.NewReader([]byte(cnt)))
 }
 
@@ -70,7 +71,7 @@ func (ts *testHLSServer) onSegment(ctx *gin.Context) {
 
 	mux.WriteTables()
 
-	enc, _ := h264.AnnexBEncode([][]byte{
+	enc, _ := h264.AnnexBMarshal([][]byte{
 		{7, 1, 2, 3}, // SPS
 		{8},          // PPS
 	})
@@ -94,7 +95,7 @@ func (ts *testHLSServer) onSegment(ctx *gin.Context) {
 
 	time.Sleep(1 * time.Second)
 
-	enc, _ = h264.AnnexBEncode([][]byte{
+	enc, _ = h264.AnnexBMarshal([][]byte{
 		{5}, // IDR
 	})
 
@@ -139,9 +140,18 @@ func TestHLSSource(t *testing.T) {
 		},
 	}
 
-	err = c.StartReading("rtsp://localhost:8554/proxied")
+	u, err := url.Parse("rtsp://localhost:8554/proxied")
+	require.NoError(t, err)
+
+	err = c.Start(u.Scheme, u.Host)
 	require.NoError(t, err)
 	defer c.Close()
+
+	tracks, baseURL, _, err := c.Describe(u)
+	require.NoError(t, err)
+
+	err = c.SetupAndPlay(tracks, baseURL)
+	require.NoError(t, err)
 
 	<-frameRecv
 }

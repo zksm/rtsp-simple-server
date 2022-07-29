@@ -11,6 +11,7 @@ import (
 
 	"github.com/aler9/gortsplib"
 	"github.com/aler9/gortsplib/pkg/base"
+	"github.com/aler9/gortsplib/pkg/url"
 
 	"github.com/aler9/rtsp-simple-server/internal/conf"
 	"github.com/aler9/rtsp-simple-server/internal/externalcmd"
@@ -24,7 +25,7 @@ func newEmptyTimer() *time.Timer {
 }
 
 type authenticateFunc func(
-	pathIPs []interface{},
+	pathIPs []fmt.Stringer,
 	pathUser conf.Credential,
 	pathPass conf.Credential,
 ) error
@@ -61,6 +62,7 @@ func (pathErrAuthCritical) Error() string {
 type pathParent interface {
 	log(logger.Level, string, ...interface{})
 	onPathSourceReady(*path)
+	onPathSourceNotReady(*path)
 	onPathClose(*path)
 }
 
@@ -119,7 +121,7 @@ type pathDescribeRes struct {
 
 type pathDescribeReq struct {
 	pathName     string
-	url          *base.URL
+	url          *url.URL
 	authenticate authenticateFunc
 	res          chan pathDescribeRes
 }
@@ -427,6 +429,8 @@ func (pa *path) run() {
 						pa.onDemandStaticSourceReadyTimer.Stop()
 						pa.onDemandStaticSourceReadyTimer = newEmptyTimer()
 
+						pa.onDemandStaticSourceScheduleClose()
+
 						for _, req := range pa.describeRequestsOnHold {
 							req.res <- pathDescribeRes{
 								stream: pa.stream,
@@ -438,8 +442,6 @@ func (pa *path) run() {
 							pa.handleReaderSetupPlayPost(req)
 						}
 						pa.setupPlayRequestsOnHold = nil
-
-						pa.onDemandStaticSourceScheduleClose()
 					}
 
 					req.res <- pathSourceStaticSetReadyRes{stream: pa.stream}
@@ -532,7 +534,9 @@ func (pa *path) run() {
 		req.res <- pathReaderSetupPlayRes{err: fmt.Errorf("terminated")}
 	}
 
-	pa.sourceSetNotReady()
+	if pa.sourceReady {
+		pa.sourceSetNotReady()
+	}
 
 	if pa.source != nil {
 		if source, ok := pa.source.(sourceStatic); ok {
@@ -654,8 +658,6 @@ func (pa *path) sourceSetReady(tracks gortsplib.Tracks) {
 	pa.sourceReady = true
 	pa.stream = newStream(tracks)
 
-	pa.parent.onPathSourceReady(pa)
-
 	if pa.conf.RunOnReady != "" {
 		pa.log(logger.Info, "runOnReady command started")
 		pa.onReadyCmd = externalcmd.NewCmd(
@@ -667,9 +669,13 @@ func (pa *path) sourceSetReady(tracks gortsplib.Tracks) {
 				pa.log(logger.Info, "runOnReady command exited with code %d", co)
 			})
 	}
+
+	pa.parent.onPathSourceReady(pa)
 }
 
 func (pa *path) sourceSetNotReady() {
+	pa.parent.onPathSourceNotReady(pa)
+
 	for r := range pa.readers {
 		pa.doReaderRemove(r)
 		r.close()
@@ -781,7 +787,7 @@ func (pa *path) handleDescribe(req pathDescribeReq) {
 	if pa.conf.Fallback != "" {
 		fallbackURL := func() string {
 			if strings.HasPrefix(pa.conf.Fallback, "/") {
-				ur := base.URL{
+				ur := url.URL{
 					Scheme: req.url.Scheme,
 					User:   req.url.User,
 					Host:   req.url.Host,
@@ -843,6 +849,8 @@ func (pa *path) handlePublisherRecord(req pathPublisherRecordReq) {
 		pa.onDemandPublisherReadyTimer.Stop()
 		pa.onDemandPublisherReadyTimer = newEmptyTimer()
 
+		pa.onDemandPublisherScheduleClose()
+
 		for _, req := range pa.describeRequestsOnHold {
 			req.res <- pathDescribeRes{
 				stream: pa.stream,
@@ -854,8 +862,6 @@ func (pa *path) handlePublisherRecord(req pathPublisherRecordReq) {
 			pa.handleReaderSetupPlayPost(req)
 		}
 		pa.setupPlayRequestsOnHold = nil
-
-		pa.onDemandPublisherScheduleClose()
 	}
 
 	req.res <- pathPublisherRecordRes{stream: pa.stream}
